@@ -28,6 +28,7 @@
 
 #include "libusbi.h"
 #include "windows_common.h"
+#include "windows_hotplug.h"
 
 #define EPOCH_TIME	UINT64_C(116444736000000000)	// 1970.01.01 00:00:000 in MS Filetime
 
@@ -507,6 +508,7 @@ static int windows_init(struct libusb_context *ctx)
 	struct windows_context_priv *priv = usbi_get_context_priv(ctx);
 	bool winusb_backend_init = false;
 	int r;
+	bool hotplug_init = false;
 
 	// NB: concurrent usage supposes that init calls are equally balanced with
 	// exit calls. If init is called more than exit, we will not exit properly
@@ -540,6 +542,12 @@ static int windows_init(struct libusb_context *ctx)
 			usbi_info(ctx, "UsbDk backend is not available");
 			// Do not report this as an error
 		}
+
+		r = windows_hotplug_init_once();
+		if (r != LIBUSB_SUCCESS)
+			goto init_exit;
+		hotplug_init = true;
+
 	}
 
 	// By default, new contexts will use the WinUSB backend
@@ -562,6 +570,9 @@ static int windows_init(struct libusb_context *ctx)
 		goto init_exit;
 	}
 
+	//init list of devices
+	priv->backend->get_device_list(ctx, NULL);
+
 	r = LIBUSB_SUCCESS;
 
 init_exit: // Holds semaphore here
@@ -574,6 +585,8 @@ init_exit: // Holds semaphore here
 			winusb_backend.exit(ctx);
 		htab_destroy();
 		--init_count;
+		if (hotplug_init)
+			windows_hotplug_deinit_once();
 	}
 
 	return r;
@@ -601,6 +614,7 @@ static void windows_exit(struct libusb_context *ctx)
 		}
 		winusb_backend.exit(ctx);
 		htab_destroy();
+		windows_hotplug_deinit_once();
 	}
 }
 
@@ -888,7 +902,8 @@ const struct usbi_os_backend usbi_backend = {
 	windows_init,
 	windows_exit,
 	windows_set_option,
-	windows_get_device_list,
+	NULL, 
+	//windows_get_device_list
 	NULL,	/* hotplug_poll */
 	NULL,	/* wrap_sys_device */
 	windows_open,
