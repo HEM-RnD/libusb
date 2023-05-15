@@ -1744,11 +1744,11 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 					dev = usbi_get_device_by_session_id(ctx, (unsigned long)dev_info_data.DevInst);
 					if (dev != NULL) {
 						priv = usbi_get_device_priv(dev);
-						if (priv->root_hub)
+						if (priv->root_hub) 
 							goto track_unref;
 						libusb_unref_device(dev);
 					}
-
+					
 					usbi_dbg(ctx, "unlisted ancestor for '%s' (non USB HID, newly connected, etc.) - ignoring", dev_id);
 					continue;
 				}
@@ -1780,6 +1780,10 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 						libusb_unref_device(dev);
 						LOOP_BREAK(LIBUSB_ERROR_NO_MEM);
 					}
+					if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
+						usbi_connect_device(dev);
+						goto setup_device; //do not unref newly crated
+					}
 				} else {
 					usbi_dbg(ctx, "found existing device for session [%lX]", session_id);
 
@@ -1801,7 +1805,7 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 			track_unref:
 				// Keep track of devices that need unref
 				if (unref_cur == unref_size) {
-					new_unref_list = realloc(unref_list, (unref_size + UNREF_SIZE_STEP) * sizeof(void *));
+					new_unref_list = realloc(unref_list, (unref_size + UNREF_SIZE_STEP) * sizeof(void*));
 					if (new_unref_list == NULL) {
 						usbi_err(ctx, "could not realloc list for unref - aborting");
 						LOOP_BREAK(LIBUSB_ERROR_NO_MEM);
@@ -1810,7 +1814,11 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 					unref_size += UNREF_SIZE_STEP;
 				}
 				unref_list[unref_cur++] = dev;
+				
 			}
+
+			setup_device:
+
 
 			// Setup device
 			switch (pass) {
@@ -1854,12 +1862,14 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 					usbi_warn(ctx, "could not retrieve port number for device '%s': %s", dev_id, windows_error_str(0));
 				r = init_device(dev, parent_dev, (uint8_t)port_nr, dev_info_data.DevInst);
 				if (r == LIBUSB_SUCCESS) {
-					// Append device to the list of discovered devices
-					discdevs = discovered_devs_append(*_discdevs, dev);
-					if (!discdevs)
-						LOOP_BREAK(LIBUSB_ERROR_NO_MEM);
+					if (_discdevs != NULL) {
+						// Append device to the list of discovered devices
+						discdevs = discovered_devs_append(*_discdevs, dev);
+						if (!discdevs)
+							LOOP_BREAK(LIBUSB_ERROR_NO_MEM);
 
-					*_discdevs = discdevs;
+						*_discdevs = discdevs;
+					}
 				} else {
 					// Failed to initialize a single device doesn't stop us from enumerating all other devices,
 					// but we skip it (don't add to list of discovered devices)
