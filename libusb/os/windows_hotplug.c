@@ -77,7 +77,6 @@ LRESULT CALLBACK message_callback_handle_device_change(HWND hWnd, UINT message, 
 
     if ((wParam != DBT_DEVICEARRIVAL) && (wParam != DBT_DEVICEREMOVECOMPLETE))
     {
-        usbi_dbg(NULL, "ignoring WM_DEVICECHANGE event %d", wParam);
         return TRUE;
     }
 
@@ -90,7 +89,7 @@ LRESULT CALLBACK message_callback_handle_device_change(HWND hWnd, UINT message, 
 
     connected = (wParam == DBT_DEVICEARRIVAL);
 
-    usbi_dbg(NULL, "PRO: Device %s: GUID("GUID_FORMAT") path '%s'", connected ? "CONNECTED" : "DISCONNECTED", GUID_ARG(dev_bdi->dbcc_classguid), dev_bdi->dbcc_name);
+    usbi_dbg(NULL, "PRO: Device %s: GUID("GUID_FORMAT")\n\tpath '%s'", connected ? "CONNECTED" : "DISCONNECTED", GUID_ARG(dev_bdi->dbcc_classguid), dev_bdi->dbcc_name);
 
     usbi_mutex_static_lock(&active_contexts_lock);
     for_each_context(ctx) {

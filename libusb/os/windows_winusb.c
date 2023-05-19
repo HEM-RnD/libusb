@@ -198,6 +198,7 @@ static bool init_dlls(struct libusb_context *ctx)
 	DLL_LOAD_FUNC_PREFIXED(SetupAPI, p, SetupDiDestroyDeviceInfoList, true);
 	DLL_LOAD_FUNC_PREFIXED(SetupAPI, p, SetupDiOpenDevRegKey, true);
 	DLL_LOAD_FUNC_PREFIXED(SetupAPI, p, SetupDiOpenDeviceInterfaceRegKey, true);
+	DLL_LOAD_FUNC_PREFIXED(SetupAPI, p, SetupDiOpenDeviceInfoA, true);
 
 	return true;
 }
@@ -2184,7 +2185,7 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 
 			if (!get_dev_info_data_by_device_id(ctx, &dev_info, &dev_info_data, device_id, TRUE))
 			{
-				usbi_warn(ctx, "failed to get device info data for device %d", device_id);
+				usbi_warn(ctx, "failed to get device info data for device %s", device_id);
 				goto next_child;
 			}
 
@@ -2271,22 +2272,26 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 	// Now loop over all device interface GUIDs, starting with HID
 	// Note: Only composite devices can possibly have more than one
 	// device interface GUID to search
+	dev_info = pSetupDiGetClassDevsA(NULL, NULL, NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+	if (dev_info == INVALID_HANDLE_VALUE) {
+		usbi_err(ctx, "failed to obtain device info list: %s", windows_error_str(0));
+		r =  LIBUSB_ERROR_OTHER;
+		goto cleanup;
+	}
 	for (guid_index = 0; guid_index < nb_guids; guid_index++)
 	{
 		if (guid_list[guid_index] == NULL)
 		{ // HID GUID can be null
 			continue;
 		}
-		for (index = 0;; index++)
+		for (index = 0;; )
 		{
 			safe_free(device_id);
 			safe_free(dev_interface_path);
 
 			r = get_interface_details(ctx, dev_info, &dev_info_data, guid_list[guid_index], &index, &dev_interface_path);
 			if ((r != LIBUSB_SUCCESS) || (dev_interface_path == NULL)) {
-				usbi_warn(ctx, "failed to get interface path for '%s'", device_id);
-				index = 0;
-				break;
+				break; //ok, no more interfaces
 			}
 			
 			device_id = get_device_id(ctx, dev_info_data.DevInst);
@@ -2301,6 +2306,7 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 			struct libusb_device* parent_dev = get_ancestor(ctx, dev_info_data.DevInst, NULL);
 			if (parent_dev && parent_dev->session_data == dev->session_data)
 			{
+				usbi_dbg(ctx, "Found device interface '%s' for device '%s'", dev_interface_path, priv->path);
 				if (priv->apib->id == USB_API_COMPOSITE)
 				{
 					get_api_type(&dev_info, &dev_info_data, &api, &sub_api);
@@ -2330,6 +2336,11 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 	}
 
 cleanup:
+
+	if (dev_info != INVALID_HANDLE_VALUE)
+	{
+		pSetupDiDestroyDeviceInfoList(dev_info);
+	}
 
 	// Free any GUIDs that were allocated
 	for (guid_index = 1; guid_index < nb_guids; guid_index++)
