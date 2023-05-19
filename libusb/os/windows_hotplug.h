@@ -23,12 +23,4 @@
 int windows_hotplug_init_once();
 void windows_hotplug_deinit_once();
 
-void windows_hotplug_init(struct libusb_context *ctx);
-void windows_hotplug_deinit(struct libusb_context *ctx);
-
-struct windows_hotplug_context_priv
-{
-    int i;
-};
-
 #endif

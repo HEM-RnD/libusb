@@ -343,6 +343,9 @@ struct windows_backend {
 	void (*clear_transfer_priv)(struct usbi_transfer *itransfer);
 	enum libusb_transfer_status (*copy_transfer_data)(struct usbi_transfer *itransfer, DWORD length);
 	int (*set_option)(struct libusb_context *ctx, enum libusb_option option, va_list args);
+	void (*device_connected)(struct libusb_context *ctx, const char* name, const GUID* guid);
+	void (*device_disconnected)(struct libusb_context* ctx, const char* id);
+	void (*device_nodes_changed)(struct libusb_context* ctx);
 };
 
 struct windows_context_priv {
@@ -417,9 +420,15 @@ HMODULE load_system_library(struct libusb_context *ctx, const char *name);
 unsigned long htab_hash(const char *str);
 enum libusb_transfer_status usbd_status_to_libusb_transfer_status(USBD_STATUS status);
 void windows_force_sync_completion(struct usbi_transfer *itransfer, ULONG size);
+void windows_device_connected(struct libusb_context *ctx, const char* id, const GUID* guid);
+void windows_device_disconnected(struct libusb_context* ctx, const char* id);
+void windows_device_nodes_changed(struct libusb_context *ctx);
 
 #if defined(ENABLE_LOGGING)
 const char *windows_error_str(DWORD error_code);
 #endif
+
+#define GUID_FORMAT "%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX"
+#define GUID_ARG(guid) (guid).Data1, (guid).Data2, (guid).Data3, (guid).Data4[0], (guid).Data4[1], (guid).Data4[2], (guid).Data4[3], (guid).Data4[4], (guid).Data4[5], (guid).Data4[6], (guid).Data4[7]
 
 #endif

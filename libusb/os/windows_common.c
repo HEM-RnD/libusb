@@ -543,10 +543,12 @@ static int windows_init(struct libusb_context *ctx)
 			// Do not report this as an error
 		}
 
-		r = windows_hotplug_init_once();
-		if (r != LIBUSB_SUCCESS)
-			goto init_exit;
-		hotplug_init = true;
+		if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
+			r = windows_hotplug_init_once();
+			if (r != LIBUSB_SUCCESS)
+				goto init_exit;
+			hotplug_init = true;
+		}
 
 	}
 
@@ -571,7 +573,8 @@ static int windows_init(struct libusb_context *ctx)
 	}
 
 	//init list of devices
-	priv->backend->get_device_list(ctx, NULL);
+	if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) 
+		priv->backend->get_device_list(ctx, NULL);
 
 	r = LIBUSB_SUCCESS;
 
@@ -614,7 +617,8 @@ static void windows_exit(struct libusb_context *ctx)
 		}
 		winusb_backend.exit(ctx);
 		htab_destroy();
-		windows_hotplug_deinit_once();
+		if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) 
+			windows_hotplug_deinit_once();
 	}
 }
 
@@ -894,6 +898,27 @@ void usbi_get_monotonic_time(struct timespec *tp)
 	tp->tv_nsec = (long)(((hires_counter.QuadPart % hires_frequency) * hires_ticks_to_ps) / UINT64_C(1000));
 }
 #endif
+
+void windows_device_connected(struct libusb_context* ctx, const char* id, const GUID* guid)
+{
+	struct windows_context_priv *priv = usbi_get_context_priv(ctx);
+	if (priv->backend->device_connected)
+		priv->backend->device_connected(ctx, id, guid);
+}
+
+void windows_device_disconnected(struct libusb_context* ctx, const char* id)
+{
+	struct windows_context_priv *priv = usbi_get_context_priv(ctx);
+	if (priv->backend->device_disconnected)
+		priv->backend->device_disconnected(ctx, id);
+}
+
+void windows_device_nodes_changed(struct libusb_context* ctx)
+{
+	struct windows_context_priv *priv = usbi_get_context_priv(ctx);
+	if (priv->backend->device_nodes_changed)
+		priv->backend->device_nodes_changed(ctx);
+}
 
 // NB: MSVC6 does not support named initializers.
 const struct usbi_os_backend usbi_backend = {

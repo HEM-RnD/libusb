@@ -57,78 +57,22 @@ static void exit_dlls(void)
     DLL_FREE_HANDLE(User32);
 }
 
-
-#define GUID_FORMAT "%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX"
-#define GUID_ARG(guid) (guid).Data1, (guid).Data2, (guid).Data3, (guid).Data4[0], (guid).Data4[1], (guid).Data4[2], (guid).Data4[3], (guid).Data4[4], (guid).Data4[5], (guid).Data4[6], (guid).Data4[7]
-
-static char *parse_device_interface_path(const char *interface_path)
-{
-    char *device_id, *guid_start;
-    unsigned int i;
-    size_t len = 0;
-
-    if (interface_path != NULL)
-        len = strlen(interface_path);
-
-    if (len < 4)
-    {
-        return NULL;
-    }
-
-    // Microsoft indiscriminatly uses '\\?\', '\\.\', '##?#" or "##.#" for root prefixes.
-    if (((interface_path[0] == '\\') && (interface_path[1] == '\\') && (interface_path[3] == '\\')) ||
-        ((interface_path[0] == '#') && (interface_path[1] == '#') && (interface_path[3] == '#')))
-    {
-        interface_path += 4;
-        len -= 4;
-    }
-
-    guid_start = strchr(interface_path, '{');
-    if (guid_start != NULL)
-    {
-        len = (guid_start - interface_path) - 1; // One more for separator
-    }
-
-    if (len <= 0)
-    {
-        usbi_err(NULL, "program assertion failed: invalid device interface path");
-        return NULL;
-    }
-
-    device_id = calloc(len + 1, 1); // One additional for NULL term.
-    if (device_id == NULL)
-    {
-        return NULL;
-    }
-    strncat(device_id, interface_path, len);
-
-    // Now convert to uppercase and replace '#' with '\'
-    for (i = 0; i < len; i++)
-    {
-        device_id[i] = (char)toupper((int)device_id[i]);
-        if (device_id[i] == '#')
-            device_id[i] = '\\';
-    }
-
-    return device_id;
-}
-
 LRESULT CALLBACK message_callback_handle_device_change(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     (void)hWnd;
     (void)message;
     DEV_BROADCAST_DEVICEINTERFACE_A *dev_bdi;
-    char* device_id;
     bool connected;
+    struct libusb_context* ctx;
 
-    if (message == DBT_DEVNODES_CHANGED) {
-        usbi_dbg(NULL, "EVENT RECEIVED: DBT_DEVNODES_CHANGED");
-    }
 
-    dev_bdi = (DEV_BROADCAST_DEVICEINTERFACE_A *)lParam;
-    if (dev_bdi->dbcc_devicetype != DBT_DEVTYP_DEVICEINTERFACE)
-    {
-        return TRUE;
+    if (wParam == DBT_DEVNODES_CHANGED) {
+        usbi_mutex_static_lock(&active_contexts_lock);
+
+        for_each_context(ctx) 
+            windows_device_nodes_changed(ctx);
+        
+        usbi_mutex_static_unlock(&active_contexts_lock);
     }
 
     if ((wParam != DBT_DEVICEARRIVAL) && (wParam != DBT_DEVICEREMOVECOMPLETE))
@@ -137,21 +81,26 @@ LRESULT CALLBACK message_callback_handle_device_change(HWND hWnd, UINT message, 
         return TRUE;
     }
 
-    device_id = parse_device_interface_path(dev_bdi->dbcc_name);
-    if (device_id == NULL)
+    dev_bdi = (DEV_BROADCAST_DEVICEINTERFACE_A *)lParam;
+    if (dev_bdi->dbcc_devicetype != DBT_DEVTYP_DEVICEINTERFACE)
     {
-        usbi_dbg(NULL, "could not parse device interface path '%s'", dev_bdi->dbcc_name);
+        usbi_dbg(NULL, "EVENT RECEIVED: DEVICE TYPE %d", dev_bdi->dbcc_devicetype);
         return TRUE;
     }
 
     connected = (wParam == DBT_DEVICEARRIVAL);
 
-    usbi_dbg(NULL, "PRO: %s (%s)", device_id, connected ? "CONNECTED" : "DISCONNECTED");
+    usbi_dbg(NULL, "PRO: Device %s: GUID("GUID_FORMAT") path '%s'", connected ? "CONNECTED" : "DISCONNECTED", GUID_ARG(dev_bdi->dbcc_classguid), dev_bdi->dbcc_name);
 
-    usbi_dbg(NULL, "PRO: device interface path '%s'", dev_bdi->dbcc_name);
-    usbi_dbg(NULL, "PRO: device class GUID: " GUID_FORMAT, GUID_ARG(dev_bdi->dbcc_classguid));
+    usbi_mutex_static_lock(&active_contexts_lock);
+    for_each_context(ctx) {
+        if (connected)
+            windows_device_connected(ctx, dev_bdi->dbcc_name, &dev_bdi->dbcc_classguid);
+        else
+            windows_device_disconnected(ctx, dev_bdi->dbcc_name);
+    }
+    usbi_mutex_static_unlock(&active_contexts_lock);
 
-    free(device_id);
 
     /*
     * The idea is that:
@@ -217,7 +166,8 @@ unsigned __stdcall windows_hotplug_threaded(void *param)
     // events you get on driverless provide no data whatsoever
     // about the device, the event (insertion or removal), or
     // even if the device is actually USB. Bummer!
-    hHotplugMessage = CreateWindowExA(0, LIBUSB_MSG_WINDOW_CLASS, NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
+    //hHotplugMessage = CreateWindowExA(0, LIBUSB_MSG_WINDOW_CLASS, NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
+    hHotplugMessage = CreateWindowExA(0, LIBUSB_MSG_WINDOW_CLASS, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
     if (hHotplugMessage == NULL)
     {
         usbi_err(NULL, "unable to create hotplug message window: %s", windows_error_str(0));
