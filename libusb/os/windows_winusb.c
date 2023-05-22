@@ -89,6 +89,54 @@ static enum libusb_transfer_status composite_copy_transfer_data(int sub_api, str
 
 static usbi_mutex_t autoclaim_lock;
 
+// Keep a list of PnP enumerator strings that are found
+static const char* usb_enumerator[8] = { "USB" };
+static unsigned int nb_usb_enumerators = 1;
+
+#define MAX_ENUMERATOR_LENGTH 16
+
+static void deinit_enumerator_list()
+{
+	unsigned int _nb_usb_enumerators = nb_usb_enumerators;
+	nb_usb_enumerators = 1;
+	unsigned int i;
+	for (i = 1; i < _nb_usb_enumerators; i++) {
+		free((void*)usb_enumerator[i]);
+		usb_enumerator[i] = NULL;
+	}
+}
+
+
+static bool is_enumerator_on_list(const char* enumerator)
+{
+	unsigned int i;
+	for (i = 0; i < nb_usb_enumerators; i++) {
+		if (strcmp(enumerator, usb_enumerator[i]) == 0)
+			return true;
+	}
+	return false;
+}
+
+static int try_add_enumerator_to_list(struct libusb_context* ctx, const char* enumerator)
+{
+	if (is_enumerator_on_list(enumerator))
+		return LIBUSB_SUCCESS;
+	usbi_dbg(ctx, "found new PnP enumerator string '%s'", enumerator);
+	if (nb_usb_enumerators >= ARRAYSIZE(usb_enumerator)) {
+		usbi_warn(ctx, "too many enumerator strings, some devices may not be accessible");
+		return LIBUSB_ERROR_NO_MEM;
+	}
+	usb_enumerator[nb_usb_enumerators] = strdup(enumerator);
+	if (usb_enumerator[nb_usb_enumerators] != NULL) {
+		nb_usb_enumerators++;
+	}
+	else {
+		usbi_err(ctx, "could not allocate enumerator string '%s'", enumerator);
+		return LIBUSB_ERROR_NO_MEM;
+	}
+	return LIBUSB_SUCCESS;
+}
+
 // API globals
 static struct winusb_interface WinUSBX[SUB_API_MAX];
 #define CHECK_WINUSBX_AVAILABLE(sub_api)		\
@@ -724,6 +772,8 @@ static void winusb_exit(struct libusb_context *ctx)
 		if (usb_api_backend[i].exit)
 			usb_api_backend[i].exit();
 	}
+
+	deinit_enumerator_list();
 
 	exit_dlls();
 }
@@ -1400,6 +1450,7 @@ static int set_composite_interface(struct libusb_context *ctx, struct libusb_dev
 	int iadi, iadintfi;
 	struct libusb_interface_association_descriptor_array *iad_array;
 	const struct libusb_interface_association_descriptor *iad;
+	const char* old_path = NULL;
 
 	// Because MI_## are not necessarily in sequential order (some composite
 	// devices will have only MI_00 & MI_03 for instance), we retrieve the actual
@@ -1425,13 +1476,14 @@ static int set_composite_interface(struct libusb_context *ctx, struct libusb_dev
 			return LIBUSB_ERROR_ACCESS;
 		}
 		// In other cases, just use the latest data
-		safe_free(priv->usb_interface[interface_number].path);
+		old_path = priv->usb_interface[interface_number].path;
 	}
 
 	usbi_dbg(ctx, "interface[%d] = [%s][%s] %s", interface_number, usb_api_backend[api].designation, get_sub_api_name(sub_api), dev_interface_path);
 	priv->usb_interface[interface_number].path = dev_interface_path;
 	priv->usb_interface[interface_number].apib = &usb_api_backend[api];
 	priv->usb_interface[interface_number].sub_api = sub_api;
+	safe_free(old_path);
 	if ((api == USB_API_HID) && (priv->hid == NULL)) {
 		priv->hid = calloc(1, sizeof(struct hid_device_priv));
 		if (priv->hid == NULL)
@@ -1503,7 +1555,7 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 	int r = LIBUSB_SUCCESS;
 	int api, sub_api;
 	unsigned int pass, i, j;
-	char enumerator[16];
+	char enumerator[MAX_ENUMERATOR_LENGTH];
 	char dev_id[MAX_PATH_LENGTH];
 	struct libusb_device *dev, *parent_dev;
 	struct winusb_device_priv *priv, *parent_priv;
@@ -1525,9 +1577,7 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 	const GUID **guid_list, **new_guid_list;
 	unsigned int guid_size = GUID_SIZE_STEP;
 	unsigned int nb_guids;
-	// Keep a list of PnP enumerator strings that are found
-	const char *usb_enumerator[8] = { "USB" };
-	unsigned int nb_usb_enumerators = 1;
+	//// Keep a list of PnP enumerator strings that are found
 	unsigned int usb_enum_index = 0;
 	// Keep a list of newly allocated devs to unref
 #define UNREF_SIZE_STEP 16
@@ -1651,23 +1701,9 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 					usbi_err(ctx, "could not read enumerator string for device '%s': %s", dev_id, windows_error_str(0));
 					LOOP_BREAK(LIBUSB_ERROR_OTHER);
 				}
-				for (j = 0; j < nb_usb_enumerators; j++) {
-					if (strcmp(usb_enumerator[j], enumerator) == 0)
-						break;
-				}
-				if (j == nb_usb_enumerators) {
-					usbi_dbg(ctx, "found new PnP enumerator string '%s'", enumerator);
-					if (nb_usb_enumerators < ARRAYSIZE(usb_enumerator)) {
-						usb_enumerator[nb_usb_enumerators] = _strdup(enumerator);
-						if (usb_enumerator[nb_usb_enumerators] != NULL) {
-							nb_usb_enumerators++;
-						} else {
-							usbi_err(ctx, "could not allocate enumerator string '%s'", enumerator);
-							LOOP_BREAK(LIBUSB_ERROR_NO_MEM);
-						}
-					} else {
-						usbi_warn(ctx, "too many enumerator strings, some devices may not be accessible");
-					}
+				r = try_add_enumerator_to_list(ctx, enumerator);
+				if (r != LIBUSB_SUCCESS) {
+					continue;
 				}
 				break;
 			case GEN_PASS:
@@ -2446,6 +2482,7 @@ static void winusb_enumerate_device(libusb_context *ctx, const char *device_id, 
 	int api, sub_api;
 	unsigned int j;
 	unsigned long session_id;
+	char enumerator[MAX_ENUMERATOR_LENGTH];
 
 	if (!get_dev_info_data_by_device_id(ctx, &dev_info, &dev_info_data, device_id, TRUE))
 	{
@@ -2497,11 +2534,22 @@ static void winusb_enumerate_device(libusb_context *ctx, const char *device_id, 
 		goto cleanup;
 	}
 
+	
+	if (IsEqualGUID(guid, &GUID_DEVINTERFACE_USB_HUB)) {
+		// lets try to find enumerator for this hub
+		if (!pSetupDiGetDeviceRegistryPropertyA(dev_info, &dev_info_data, SPDRP_ENUMERATOR_NAME,
+			NULL, (PBYTE)enumerator, sizeof(enumerator), NULL)) {
+			usbi_err(ctx, "could not read enumerator string for device '%s': %s", device_id, windows_error_str(0));
+			goto cleanup; //LIBUSB_ERROR_OTHER
+		}
+		try_add_enumerator_to_list(ctx, enumerator); //Ignore error, we can continue without it
+
 	// If this is a HUB and the port number is zero,
 	// then this is a root hub (no parent device needed)
-	if (port_number == 0 && IsEqualGUID(guid, &GUID_DEVINTERFACE_USB_HUB))
+		if (port_number == 0)
 	{
 		goto alloc_device;
+	}
 	}
 
 	parent_dev = get_ancestor(ctx, dev_info_data.DevInst, NULL);
@@ -2663,12 +2711,47 @@ cleanup:
 	}
 }
 
+
+const char* get_enumerator_from_device_id(const char* device_id, char enum_class[MAX_ENUMERATOR_LENGTH])
+{
+	const char* tmp = strchr(device_id, '\\');
+	unsigned int len;
+	if (tmp == NULL) {
+		return NULL;
+	}
+
+	len = (unsigned int)(tmp - device_id);
+	if (len >= MAX_ENUMERATOR_LENGTH - 1) {
+		return NULL;
+	}
+	memcpy(enum_class, device_id, len);
+	enum_class[len] = '\0';
+	return enum_class;
+}
+
 static void winusb_device_connected(struct libusb_context *ctx, const char *name, const GUID *guid)
 {
 	(void)ctx;
 	(void)name;
 	(void)guid;
 	char *device_id = parse_device_interface_path(name);
+	char enumerator_buf[MAX_ENUMERATOR_LENGTH];
+	const char* enumerator;
+	int api, sub_api;
+	GUID hid_guid = { 0 };
+	DWORD index = 0;
+	HDEVINFO dev_info = INVALID_HANDLE_VALUE;
+	SP_DEVINFO_DATA dev_info_data = { 0 };
+	struct libusb_device *parent_dev = NULL;
+	bool is_usb_device;
+	char* dev_interface_path = NULL;
+	int r; 
+
+	if (HidD_GetHidGuid != NULL)
+	{
+		HidD_GetHidGuid(&hid_guid);
+	}
+
 	if (device_id == NULL)
 	{
 		usbi_err(ctx, "failed to parse device interface path '%s'", name);
@@ -2678,7 +2761,75 @@ static void winusb_device_connected(struct libusb_context *ctx, const char *name
 	{
 		winusb_enumerate_device(ctx, device_id, guid);
 	}
+	else {		
+		//look for compatible enumerator
+		enumerator = get_enumerator_from_device_id(device_id, enumerator_buf);
+		if (enumerator == NULL) {
+			usbi_err(ctx, "failed to get enumerator from device id '%s'", device_id);
+			goto out;
+		}
+		is_usb_device = is_enumerator_on_list(enumerator);
+		if (!is_usb_device && !IsEqualGUID(guid, &hid_guid)) {
+			goto out;
+		}
+
+		//get parent device
+		
+		if (!get_dev_info_data_by_device_id(NULL, &dev_info, &dev_info_data, device_id, true)) {
+			goto out;
+		}
+
+		parent_dev = get_ancestor(ctx, dev_info_data.DevInst, NULL);
+		if (parent_dev == NULL) {
+			usbi_dbg(ctx, "could not get parent instance id for '%s'", device_id);
+			goto out;
+		}
+		
+		struct winusb_device_priv* parent_priv = usbi_get_device_priv(parent_dev);
+
+		r = get_interface_details(ctx, dev_info, &dev_info_data, guid, &index, &dev_interface_path);
+		if ((r != LIBUSB_SUCCESS) || (dev_interface_path == NULL)) {
+			goto out;
+		}
+
+		if (parent_priv->apib->id == USB_API_COMPOSITE) {
+			//when it is a hid guid we set api directly to hid, else we try to get api from device
+			if (IsEqualGUID(guid, &hid_guid)) {
+				api = USB_API_HID;
+				sub_api = SUB_API_NOTSET;
+			}
+			else {
+				api = USB_API_UNSUPPORTED;
+				sub_api = SUB_API_NOTSET;
+				get_api_type(&dev_info, &dev_info_data, &api, &sub_api);
+			}
+			
+			if (api != USB_API_UNSUPPORTED) {
+				if (set_composite_interface(ctx, parent_dev, dev_interface_path, device_id, api, sub_api) == LIBUSB_SUCCESS) {
+					dev_interface_path = NULL;
+				}
+				else {
+					usbi_warn(ctx, "failed to set composite interface for '%s'", device_id);
+				}
+			}
+			else {
+				usbi_dbg(ctx, "unsupported API for interface '%s'", device_id);
+			}
+		}
+		else if (parent_priv->apib->id == USB_API_HID) {
+			if (set_hid_interface(ctx, parent_dev, dev_interface_path) == LIBUSB_SUCCESS) {
+				dev_interface_path = NULL;
+			}
+			else {
+				usbi_warn(ctx, "failed to set hid interface for '%s'", device_id);
+			}
+		}
+	}
+	out:
 	free(device_id);
+	safe_free(dev_interface_path);
+	if (parent_dev)
+		libusb_unref_device(parent_dev);
 }
 /*
  * You can call CM_Get_Device_Interface_Property to get the property DEVPKEY_Device_InstanceId, then you can call CM_Locate_DevNode

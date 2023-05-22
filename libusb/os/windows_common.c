@@ -611,14 +611,14 @@ static void windows_exit(struct libusb_context *ctx)
 
 	// Only works if exits and inits are balanced exactly
 	if (--init_count == 0) { // Last exit
+		if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG))
+			windows_hotplug_deinit_once();
 		if (usbdk_available) {
 			usbdk_backend.exit(ctx);
 			usbdk_available = false;
 		}
 		winusb_backend.exit(ctx);
 		htab_destroy();
-		if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) 
-			windows_hotplug_deinit_once();
 	}
 }
 
