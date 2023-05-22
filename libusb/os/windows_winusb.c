@@ -1377,6 +1377,20 @@ static void get_api_type(HDEVINFO *dev_info, SP_DEVINFO_DATA *dev_info_data,
 	}
 }
 
+static const char* get_sub_api_name(int sub_api)
+{
+	switch (sub_api) {
+		case SUB_API_LIBUSBK:
+			return "LIBUSBK";
+		case SUB_API_LIBUSB0:
+			return "LIBUSB0";
+		case SUB_API_WINUSB:
+			return "WINUSB";
+		default:
+			return "NOT SUPPORTED";
+	}
+}
+
 static int set_composite_interface(struct libusb_context *ctx, struct libusb_device *dev,
 	char *dev_interface_path, char *device_id, int api, int sub_api)
 {
@@ -1414,7 +1428,7 @@ static int set_composite_interface(struct libusb_context *ctx, struct libusb_dev
 		safe_free(priv->usb_interface[interface_number].path);
 	}
 
-	usbi_dbg(ctx, "interface[%d] = %s", interface_number, dev_interface_path);
+	usbi_dbg(ctx, "interface[%d] = [%s][%s] %s", interface_number, usb_api_backend[api].designation, get_sub_api_name(sub_api), dev_interface_path);
 	priv->usb_interface[interface_number].path = dev_interface_path;
 	priv->usb_interface[interface_number].apib = &usb_api_backend[api];
 	priv->usb_interface[interface_number].sub_api = sub_api;
@@ -2109,6 +2123,22 @@ static char* get_device_id(struct libusb_context* ctx, DEVINST devinst)
 	return device_id;
 }
 
+/*
+ * Checks if device is ancestor of devisnt 
+ */
+static bool is_descendant_of_dev(DEVINST devinst, struct libusb_device* dev)
+{
+	unsigned long session_id = dev->session_data;
+	DEVINST parent_devinst;
+
+	while (devinst != session_id) {
+		if (CM_Get_Parent(&parent_devinst, devinst, 0) != CR_SUCCESS)
+			break;
+		devinst = parent_devinst;
+	}
+
+	return devinst == session_id;
+}
 
 static int enumerate_device_interfaces(struct libusb_device *dev)
 {
@@ -2163,6 +2193,15 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 		guid_list[0] = NULL;
 	}
 
+	dev_info_data.cbSize = sizeof(SP_DEVINFO_DATA);
+
+	dev_info = pSetupDiGetClassDevsA(NULL, NULL, NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+	if (dev_info == INVALID_HANDLE_VALUE) {
+		usbi_err(ctx, "failed to obtain device info list: %s", windows_error_str(0));
+		r = LIBUSB_ERROR_OTHER;
+		goto cleanup;
+	}
+
 	// For composite devices, search for device interface GUIDs on all interfaces
 	if (priv->apib->id == USB_API_COMPOSITE)
 	{
@@ -2183,7 +2222,9 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 				goto next_child;
 			}
 
-			if (!get_dev_info_data_by_device_id(ctx, &dev_info, &dev_info_data, device_id, TRUE))
+			usbi_dbg(ctx, "found child device '%s'", device_id);
+
+			if (!pSetupDiOpenDeviceInfoA(dev_info, device_id, NULL, 0, &dev_info_data))
 			{
 				usbi_warn(ctx, "failed to get device info data for device %s", device_id);
 				goto next_child;
@@ -2255,11 +2296,6 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 			}
 
 		next_child:
-			if (dev_info != INVALID_HANDLE_VALUE)
-			{
-				pSetupDiDestroyDeviceInfoList(dev_info);
-				dev_info = INVALID_HANDLE_VALUE;
-			}
 			safe_free(device_id);
 
 			if (CM_Get_Sibling(&child_devinst, child_devinst, 0) != CR_SUCCESS)
@@ -2269,15 +2305,27 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 		}
 	}
 
-	// Now loop over all device interface GUIDs, starting with HID
-	// Note: Only composite devices can possibly have more than one
-	// device interface GUID to search
+	int tries = 0;
+	int found;
+	for (;;) {
+		try_to_find:
+
+		pSetupDiDestroyDeviceInfoList(dev_info);
+		if (tries > 20)
+			break;
+		found = 0;
+
 	dev_info = pSetupDiGetClassDevsA(NULL, NULL, NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
 	if (dev_info == INVALID_HANDLE_VALUE) {
 		usbi_err(ctx, "failed to obtain device info list: %s", windows_error_str(0));
-		r =  LIBUSB_ERROR_OTHER;
+			r = LIBUSB_ERROR_OTHER;
 		goto cleanup;
 	}
+
+
+		// Now loop over all device interface GUIDs, starting with HID
+		// Note: Only composite devices can possibly have more than one
+		// device interface GUID to search
 	for (guid_index = 0; guid_index < nb_guids; guid_index++)
 	{
 		if (guid_list[guid_index] == NULL)
@@ -2303,18 +2351,26 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 
 			// Device interfaces can belong to any device, so make sure this interface is a child node
 			// of the device are enumerating
-			struct libusb_device* parent_dev = get_ancestor(ctx, dev_info_data.DevInst, NULL);
-			if (parent_dev && parent_dev->session_data == dev->session_data)
+				if (!is_descendant_of_dev(dev_info_data.DevInst, dev))
 			{
+					usbi_dbg(ctx, "Skipping device interface '%s' because it is not a child node", device_id);
+					continue;
+				}
 				usbi_dbg(ctx, "Found device interface '%s' for device '%s'", dev_interface_path, priv->path);
+				found+=1;
 				if (priv->apib->id == USB_API_COMPOSITE)
 				{
+					if (guid_index == 0) {
+						api = USB_API_HID;
+						sub_api = SUB_API_NOTSET;
+					}
+					else {
 					get_api_type(&dev_info, &dev_info_data, &api, &sub_api);
 					if (api == USB_API_UNSUPPORTED)
 					{
 						continue;
 					}
-
+					}
 					if (set_composite_interface(ctx, dev, dev_interface_path, device_id, api, sub_api) != LIBUSB_SUCCESS)
 					{
 						usbi_warn(ctx, "failed to set composite interface for '%s'", device_id);
@@ -2331,8 +2387,20 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 					}
 					dev_interface_path = NULL;
 				}
+
+			}
+
+			
+			if (found == 0 && guid_index != 0) { // we didn't find any interfaces for this guid, but we should have, so we try again. Skipping HID - we don't know if it should be there or not
+				usbi_dbg(ctx, "No interfaces of GUID class " GUID_FORMAT " found for device '%s', trying again", GUID_ARG(*guid_list[guid_index]), priv->path);
+				SleepEx(2, TRUE); 
+				tries++; 
+				goto try_to_find;
 			}
 		}
+		if (found != 0) {
+			break;
+	}
 	}
 
 cleanup:
@@ -2558,7 +2626,9 @@ alloc_device:
 	{
 	case USB_API_COMPOSITE:
 	case USB_API_HID:
-		if (enumerate_device_interfaces(dev) != LIBUSB_SUCCESS) // missing enumerate_device_interfaces
+
+	
+		if (enumerate_device_interfaces(dev) != LIBUSB_SUCCESS)
 		{
 			usbi_warn(ctx, "failed to enumerate interfaces for '%s'", device_id);
 			goto cleanup;
@@ -2617,16 +2687,22 @@ static void winusb_device_connected(struct libusb_context *ctx, const char *name
  * so you'll need to be looking for the correct class to look up its interface names.
  */
 
-static void winusb_device_disconnected(struct libusb_context *ctx, const char *name)
+static void winusb_device_disconnected(struct libusb_context *ctx, const char *name, const GUID* guid)
 {
 	struct libusb_device *dev;
 	struct libusb_device *found = NULL;
 	char *device_id = parse_device_interface_path(name);
-
+	if (device_id == NULL)
+	{
+		usbi_err(ctx, "failed to parse device interface path '%s'", name);
+		return;
+	}
+	if (IsEqualGUID(guid, &GUID_DEVINTERFACE_USB_DEVICE) || IsEqualGUID(guid, &GUID_DEVINTERFACE_USB_HUB))
+	{
 	usbi_mutex_lock(&ctx->usb_devs_lock);
 	for_each_device(ctx, dev)
 	{
-		struct winusb_device_priv *priv = usbi_get_device_priv(dev);
+			struct winusb_device_priv* priv = usbi_get_device_priv(dev);
 		if (strcmp(priv->dev_id, device_id) == 0)
 		{
 			found = libusb_ref_device(dev);
@@ -2645,6 +2721,13 @@ static void winusb_device_disconnected(struct libusb_context *ctx, const char *n
 	{
 		usbi_warn(ctx, "device %s disconnected but not found", device_id);
 	}
+	}
+	else {
+		//TODO here try to detect enumerator, but we need enumerator list!
+		//then try to unset interface
+	}
+
+	free(device_id);
 }
 
 static void winusb_device_nodes_changed(struct libusb_context *ctx)

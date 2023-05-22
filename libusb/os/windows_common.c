@@ -906,11 +906,11 @@ void windows_device_connected(struct libusb_context* ctx, const char* id, const 
 		priv->backend->device_connected(ctx, id, guid);
 }
 
-void windows_device_disconnected(struct libusb_context* ctx, const char* id)
+void windows_device_disconnected(struct libusb_context* ctx, const char* id, const GUID* guid)
 {
 	struct windows_context_priv *priv = usbi_get_context_priv(ctx);
 	if (priv->backend->device_disconnected)
-		priv->backend->device_disconnected(ctx, id);
+		priv->backend->device_disconnected(ctx, id, guid);
 }
 
 void windows_device_nodes_changed(struct libusb_context* ctx)

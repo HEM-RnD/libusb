@@ -96,7 +96,7 @@ LRESULT CALLBACK message_callback_handle_device_change(HWND hWnd, UINT message, 
         if (connected)
             windows_device_connected(ctx, dev_bdi->dbcc_name, &dev_bdi->dbcc_classguid);
         else
-            windows_device_disconnected(ctx, dev_bdi->dbcc_name);
+            windows_device_disconnected(ctx, dev_bdi->dbcc_name, &dev_bdi->dbcc_classguid);
     }
     usbi_mutex_static_unlock(&active_contexts_lock);
 
