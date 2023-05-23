@@ -899,18 +899,11 @@ void usbi_get_monotonic_time(struct timespec *tp)
 }
 #endif
 
-void windows_device_connected(struct libusb_context* ctx, const char* id, const GUID* guid)
+void windows_device_connection_changed(struct libusb_context* ctx, const char* id, const GUID* guid, bool connected)
 {
 	struct windows_context_priv *priv = usbi_get_context_priv(ctx);
-	if (priv->backend->device_connected)
-		priv->backend->device_connected(ctx, id, guid);
-}
-
-void windows_device_disconnected(struct libusb_context* ctx, const char* id, const GUID* guid)
-{
-	struct windows_context_priv *priv = usbi_get_context_priv(ctx);
-	if (priv->backend->device_disconnected)
-		priv->backend->device_disconnected(ctx, id, guid);
+	if (priv->backend->device_connection_changed)
+		priv->backend->device_connection_changed(ctx, id, guid, connected);
 }
 
 void windows_device_nodes_changed(struct libusb_context* ctx)

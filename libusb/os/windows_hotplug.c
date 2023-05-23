@@ -93,10 +93,7 @@ LRESULT CALLBACK message_callback_handle_device_change(HWND hWnd, UINT message, 
 
     usbi_mutex_static_lock(&active_contexts_lock);
     for_each_context(ctx) {
-        if (connected)
-            windows_device_connected(ctx, dev_bdi->dbcc_name, &dev_bdi->dbcc_classguid);
-        else
-            windows_device_disconnected(ctx, dev_bdi->dbcc_name, &dev_bdi->dbcc_classguid);
+        windows_device_connection_changed(ctx, dev_bdi->dbcc_name, &dev_bdi->dbcc_classguid, connected);
     }
     usbi_mutex_static_unlock(&active_contexts_lock);
 

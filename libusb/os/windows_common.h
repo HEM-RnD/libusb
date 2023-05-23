@@ -343,8 +343,7 @@ struct windows_backend {
 	void (*clear_transfer_priv)(struct usbi_transfer *itransfer);
 	enum libusb_transfer_status (*copy_transfer_data)(struct usbi_transfer *itransfer, DWORD length);
 	int (*set_option)(struct libusb_context *ctx, enum libusb_option option, va_list args);
-	void (*device_connected)(struct libusb_context *ctx, const char* name, const GUID* guid);
-	void (*device_disconnected)(struct libusb_context* ctx, const char* id, const GUID* guid);
+	void (*device_connection_changed)(struct libusb_context *ctx, const char* name, const GUID* guid, bool connected);
 	void (*device_nodes_changed)(struct libusb_context* ctx);
 };
 
@@ -420,8 +419,7 @@ HMODULE load_system_library(struct libusb_context *ctx, const char *name);
 unsigned long htab_hash(const char *str);
 enum libusb_transfer_status usbd_status_to_libusb_transfer_status(USBD_STATUS status);
 void windows_force_sync_completion(struct usbi_transfer *itransfer, ULONG size);
-void windows_device_connected(struct libusb_context *ctx, const char* id, const GUID* guid);
-void windows_device_disconnected(struct libusb_context* ctx, const char* id, const GUID* guid);
+void windows_device_connection_changed(struct libusb_context *ctx, const char* id, const GUID* guid, bool connected);
 void windows_device_nodes_changed(struct libusb_context *ctx);
 
 #if defined(ENABLE_LOGGING)
