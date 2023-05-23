@@ -1682,7 +1682,6 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 	const GUID **guid_list, **new_guid_list;
 	unsigned int guid_size = GUID_SIZE_STEP;
 	unsigned int nb_guids;
-	//// Keep a list of PnP enumerator strings that are found
 	unsigned int usb_enum_index = 0;
 	// Keep a list of newly allocated devs to unref
 #define UNREF_SIZE_STEP 16
@@ -1816,7 +1815,14 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 				if (!pSetupDiGetDeviceRegistryPropertyA(*dev_info, &dev_info_data, SPDRP_DRIVER,
 					NULL, NULL, 0, NULL) && (GetLastError() != ERROR_INSUFFICIENT_BUFFER)) {
 					usbi_info(ctx, "The following device has no driver: '%s'", dev_id);
+					//if hotplug supported
+					if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
+						usbi_info(ctx, "libusb will not be able to access it, ignoring....");
+						continue;
+					}
+					else {
 					usbi_info(ctx, "libusb will not be able to access it");
+				}
 				}
 				// ...and to add the additional device interface GUIDs
 				key = pSetupDiOpenDevRegKey(*dev_info, &dev_info_data, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
@@ -2607,30 +2613,26 @@ static void winusb_enumerate_device(libusb_context *ctx, const char *device_id, 
 	dev = usbi_get_device_by_session_id(ctx, session_id);
 	if (dev != NULL)
 	{
-		usbi_dbg(ctx, "device found in session [%X] (%d.%d)", session_id, dev->bus_number, dev->device_address);
-
-		// TODO sure? maybe something is not initialized properly yet
-		// TODO here we should check if nothing changed, from get_device_list:
-		/*
 		priv = usbi_get_device_priv(dev);
-					if (strcmp(priv->dev_id, dev_id) != 0)
+		if (strcmp(priv->dev_id, device_id) != 0)
 					{
 						usbi_dbg(ctx, "device instance ID for session [%lX] changed", session_id);
 						usbi_disconnect_device(dev);
 						libusb_unref_device(dev);
-						goto alloc_device;
-					}
-					if (!IsEqualGUID(&priv->class_guid, &dev_info_data.ClassGuid))
+		} else if (!IsEqualGUID(&priv->class_guid, &dev_info_data.ClassGuid))
 					{
 						usbi_dbg(ctx, "device class GUID for session [%lX] changed", session_id);
 						usbi_disconnect_device(dev);
 						libusb_unref_device(dev);
-						goto alloc_device;
-					}
-		*/
-		// but maybe in case of hotplug we don't need to check that, because we should always receive device removed event before device added event
+		} else if (priv->apib->id == USB_API_UNSUPPORTED) {
+			usbi_dbg(ctx, "possible driver installed for device %s, trying to reinit (detach/attach sequence)", device_id);
+			usbi_disconnect_device(dev);
+			libusb_unref_device(dev);
+		} else {
+			usbi_warn(ctx, "device found in session [%X] (%d.%d), ignoring", session_id, dev->bus_number, dev->device_address);
 		libusb_unref_device(dev);
 		return;
+	}
 	}
 
 	if (get_device_port_and_state(ctx, &dev_info, &dev_info_data, device_id, &port_number) != LIBUSB_SUCCESS)
