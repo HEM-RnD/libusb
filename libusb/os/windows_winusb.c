@@ -230,6 +230,7 @@ static bool init_dlls(struct libusb_context *ctx)
 	DLL_LOAD_FUNC(Cfgmgr32, CM_Get_Sibling, true);
 	DLL_LOAD_FUNC(Cfgmgr32, CM_Get_Device_ID_Size, true);
 	DLL_LOAD_FUNC(Cfgmgr32, CM_Get_Device_IDA, true);
+	DLL_LOAD_FUNC(Cfgmgr32, CM_Get_DevNode_Status, true);
 
 	// Prefixed to avoid conflict with header files
 	DLL_GET_HANDLE(ctx, AdvAPI32);
@@ -1667,6 +1668,7 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 	char *dev_interface_path = NULL;
 	unsigned long session_id;
 	DWORD size, port_nr, reg_type, install_state;
+	ULONG ulStatus, ulProblemNumber;
 	HKEY key;
 	char guid_string[MAX_GUID_STRING_LENGTH];
 	GUID *if_guid;
@@ -1682,6 +1684,7 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 	const GUID **guid_list, **new_guid_list;
 	unsigned int guid_size = GUID_SIZE_STEP;
 	unsigned int nb_guids;
+
 	unsigned int usb_enum_index = 0;
 	// Keep a list of newly allocated devs to unref
 #define UNREF_SIZE_STEP 16
@@ -1707,7 +1710,7 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 	guid_list[HUB_PASS] = &GUID_DEVINTERFACE_USB_HUB;
 	guid_list[DEV_PASS] = &GUID_DEVINTERFACE_USB_DEVICE;
 	guid_list[HCD_PASS] = &GUID_DEVINTERFACE_USB_HOST_CONTROLLER;
-	guid_list[GEN_PASS] = NULL;
+	guid_list[GEN_PASS] = NULL; // it goes through all devices of "USB" enumerator (and other enumerators detected in HUBS). For each of them finds DeviceInterfaceGUID of DeviceInterfaceGUIDs to add them to guids to check. These are actually returned devices. Detected guids are necessary to setup different api etc. During GEN pass api equals unsupported?? when composit devices are found? during gen or dev?
 	if (HidD_GetHidGuid != NULL) {
 		HidD_GetHidGuid(&hid_guid);
 		guid_list[HID_PASS] = &hid_guid;
@@ -1732,7 +1735,7 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 	}
 
 	for (pass = 0; ((pass < nb_guids) && (r == LIBUSB_SUCCESS)); pass++) {
-//#define ENUM_DEBUG
+#define ENUM_DEBUG
 #if defined(ENABLE_LOGGING) && defined(ENUM_DEBUG)
 		const char * const passname[] = {"HUB", "DEV", "HCD", "GEN", "HID", "EXT"};
 		usbi_dbg(ctx, "#### PROCESSING %ss %s", passname[MIN(pass, EXT_PASS)], guid_to_string(guid_list[pass], guid_string));
@@ -1815,14 +1818,26 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 				if (!pSetupDiGetDeviceRegistryPropertyA(*dev_info, &dev_info_data, SPDRP_DRIVER,
 					NULL, NULL, 0, NULL) && (GetLastError() != ERROR_INSUFFICIENT_BUFFER)) {
 					usbi_info(ctx, "The following device has no driver: '%s'", dev_id);
-					//if hotplug supported
-					if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
-						usbi_info(ctx, "libusb will not be able to access it, ignoring....");
+					usbi_info(ctx, "libusb will not be able to access it");
+				}
+				// check device status
+				if (CM_Get_DevNode_Status(&ulStatus, &ulProblemNumber, dev_info_data.DevInst, 0) != CR_SUCCESS) {
+					usbi_dbg(ctx, "could not retrieve device status for device instance %d", dev_info_data.DevInst);
+					break;
+				}
+				if ((ulStatus & DN_HAS_PROBLEM)) {
+					if (ulProblemNumber == CM_PROB_DISABLED) {
+						usbi_dbg(ctx, "Device '%s' is disabled, skipping...", dev_id);
+						continue;
+					}
+					else if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG) && ulProblemNumber == CM_PROB_FAILED_INSTALL) {
+						usbi_warn(ctx, "Hotplug support changed behavior of library, i.e. not installed devices are not detected.");
+						usbi_warn(ctx, "Skipping '%s'...", dev_id);
 						continue;
 					}
 					else {
-					usbi_info(ctx, "libusb will not be able to access it");
-				}
+						usbi_warn(ctx, "Device '%s' has problem %08X, may not work correctly", dev_id, ulProblemNumber);
+					}
 				}
 				// ...and to add the additional device interface GUIDs
 				key = pSetupDiOpenDevRegKey(*dev_info, &dev_info_data, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
@@ -1947,7 +1962,7 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 					}
 					if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
 						usbi_connect_device(dev);
-						goto setup_device; // do not unref newly crated
+						goto setup_device; // do not unref newly created
 					}
 				} else {
 					usbi_dbg(ctx, "found existing device for session [%lX]", session_id);
@@ -2076,10 +2091,6 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 		free((void *)guid_list[pass]);
 	free((void *)guid_list);
 
-	// Free any PnP enumerator strings
-	for (i = 1; i < nb_usb_enumerators; i++)
-		free((void *)usb_enumerator[i]);
-
 	// Unref newly allocated devs
 	for (i = 0; i < unref_cur; i++)
 		libusb_unref_device(unref_list[i]);
@@ -2087,17 +2098,6 @@ static int winusb_get_device_list(struct libusb_context *ctx, struct discovered_
 	free(unref_list);
 
 	return r;
-}
-
-static bool id_has_enumerator(const char *id, const char *enumerator)
-{
-	for (int i = 0;; ++i)
-	{
-		if (enumerator[i] == '\0')
-			return id[i] == '\\';
-		if (id[i] != enumerator[i])
-			return false;
-	}
 }
 
 static char *parse_device_interface_path(const char *interface_path)
@@ -2309,8 +2309,6 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 	unsigned int j;
 	int r = LIBUSB_SUCCESS;
 
-	SleepEx(1000, TRUE); // Give the system some time to settle down
-
 	if ((priv->apib->id != USB_API_COMPOSITE) && (priv->apib->id != USB_API_HID))
 	{
 		usbi_err(ctx, "program assertion failed: '%s' is not composite/hid", priv->dev_id);
@@ -2462,44 +2460,44 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 			break;
 		found = 0;
 
-	dev_info = pSetupDiGetClassDevsA(NULL, NULL, NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-	if (dev_info == INVALID_HANDLE_VALUE) {
-		usbi_err(ctx, "failed to obtain device info list: %s", windows_error_str(0));
+		dev_info = pSetupDiGetClassDevsA(NULL, NULL, NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+		if (dev_info == INVALID_HANDLE_VALUE) {
+			usbi_err(ctx, "failed to obtain device info list: %s", windows_error_str(0));
 			r = LIBUSB_ERROR_OTHER;
-		goto cleanup;
-	}
+			goto cleanup;
+		}
 
 
 		// Now loop over all device interface GUIDs, starting with HID
 		// Note: Only composite devices can possibly have more than one
 		// device interface GUID to search
-	for (guid_index = 0; guid_index < nb_guids; guid_index++)
-	{
-		if (guid_list[guid_index] == NULL)
-		{ // HID GUID can be null
-			continue;
-		}
-		for (index = 0;; )
+		for (guid_index = 0; guid_index < nb_guids; guid_index++)
 		{
-			safe_free(device_id);
-			safe_free(dev_interface_path);
-
-			r = get_interface_details(ctx, dev_info, &dev_info_data, guid_list[guid_index], &index, &dev_interface_path);
-			if ((r != LIBUSB_SUCCESS) || (dev_interface_path == NULL)) {
-				break; //ok, no more interfaces
-			}
-			
-			device_id = get_device_id(ctx, dev_info_data.DevInst);
-			if (device_id == NULL)
-			{
-				usbi_warn(ctx, "failed to get device instance id for instance %d", dev_info_data.DevInst);
+			if (guid_list[guid_index] == NULL)
+			{ // HID GUID can be null
 				continue;
 			}
-
-			// Device interfaces can belong to any device, so make sure this interface is a child node
-			// of the device are enumerating
-				if (!is_descendant_of_dev(dev_info_data.DevInst, dev))
+			for (index = 0;; )
 			{
+				safe_free(device_id);
+				safe_free(dev_interface_path);
+
+				r = get_interface_details(ctx, dev_info, &dev_info_data, guid_list[guid_index], &index, &dev_interface_path);
+				if ((r != LIBUSB_SUCCESS) || (dev_interface_path == NULL)) {
+					break; //ok, no more interfaces
+				}
+
+				device_id = get_device_id(ctx, dev_info_data.DevInst);
+				if (device_id == NULL)
+				{
+					usbi_warn(ctx, "failed to get device instance id for instance %d", dev_info_data.DevInst);
+					continue;
+				}
+
+				// Device interfaces can belong to any device, so make sure this interface is a child node
+				// of the device are enumerating
+				if (!is_descendant_of_dev(dev_info_data.DevInst, dev))
+				{
 					usbi_dbg(ctx, "Skipping device interface '%s' because it is not a child node", device_id);
 					continue;
 				}
@@ -2512,11 +2510,11 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 						sub_api = SUB_API_NOTSET;
 					}
 					else {
-					get_api_type(&dev_info, &dev_info_data, &api, &sub_api);
-					if (api == USB_API_UNSUPPORTED)
-					{
-						continue;
-					}
+						get_api_type(&dev_info, &dev_info_data, &api, &sub_api);
+						if (api == USB_API_UNSUPPORTED)
+						{
+							continue;
+						}
 					}
 					if (set_composite_interface(ctx, dev, dev_interface_path, device_id, api, sub_api) != LIBUSB_SUCCESS)
 					{
@@ -2547,7 +2545,7 @@ static int enumerate_device_interfaces(struct libusb_device *dev)
 		}
 		if (found != 0) {
 			break;
-	}
+		}
 	}
 
 cleanup:
@@ -2615,24 +2613,24 @@ static void winusb_enumerate_device(libusb_context *ctx, const char *device_id, 
 	{
 		priv = usbi_get_device_priv(dev);
 		if (strcmp(priv->dev_id, device_id) != 0)
-					{
-						usbi_dbg(ctx, "device instance ID for session [%lX] changed", session_id);
-						usbi_disconnect_device(dev);
-						libusb_unref_device(dev);
+		{
+			usbi_dbg(ctx, "device instance ID for session [%lX] changed", session_id);
+			usbi_disconnect_device(dev);
+			libusb_unref_device(dev);
 		} else if (!IsEqualGUID(&priv->class_guid, &dev_info_data.ClassGuid))
-					{
-						usbi_dbg(ctx, "device class GUID for session [%lX] changed", session_id);
-						usbi_disconnect_device(dev);
-						libusb_unref_device(dev);
+		{
+			usbi_dbg(ctx, "device class GUID for session [%lX] changed", session_id);
+			usbi_disconnect_device(dev);
+			libusb_unref_device(dev);
 		} else if (priv->apib->id == USB_API_UNSUPPORTED) {
 			usbi_dbg(ctx, "possible driver installed for device %s, trying to reinit (detach/attach sequence)", device_id);
 			usbi_disconnect_device(dev);
 			libusb_unref_device(dev);
 		} else {
 			usbi_warn(ctx, "device found in session [%X] (%d.%d), ignoring", session_id, dev->bus_number, dev->device_address);
-		libusb_unref_device(dev);
-		return;
-	}
+			libusb_unref_device(dev);
+			return;
+		}
 	}
 
 	if (get_device_port_and_state(ctx, &dev_info, &dev_info_data, device_id, &port_number) != LIBUSB_SUCCESS)
@@ -2651,12 +2649,12 @@ static void winusb_enumerate_device(libusb_context *ctx, const char *device_id, 
 		}
 		try_add_enumerator_to_list(ctx, enumerator); //Ignore error, we can continue without it
 
-	// If this is a HUB and the port number is zero,
-	// then this is a root hub (no parent device needed)
+		// If this is a HUB and the port number is zero,
+		// then this is a root hub (no parent device needed)
 		if (port_number == 0)
-	{
-		goto alloc_device;
-	}
+		{
+			goto alloc_device;
+		}
 	}
 
 	parent_dev = get_ancestor(ctx, dev_info_data.DevInst, NULL);
@@ -2895,7 +2893,7 @@ static void winusb_device_connection_status_changed(struct libusb_context *ctx, 
 	if (IsEqualGUID(guid, &GUID_DEVINTERFACE_USB_DEVICE) || IsEqualGUID(guid, &GUID_DEVINTERFACE_USB_HUB))
 	{
 		if (connected)
-		winusb_enumerate_device(ctx, device_id, guid);
+			winusb_enumerate_device(ctx, device_id, guid);
 		else
 			winusb_device_disconnected(ctx, device_id);
 	}
@@ -2930,37 +2928,37 @@ static void winusb_device_connection_status_changed(struct libusb_context *ctx, 
 			goto out;
 		}
 		if (connected) {
-		if (parent_priv->apib->id == USB_API_COMPOSITE) {
-			//when it is a hid guid we set api directly to hid, else we try to get api from device
-			if (IsEqualGUID(guid, &hid_guid)) {
-				api = USB_API_HID;
-				sub_api = SUB_API_NOTSET;
+			if (parent_priv->apib->id == USB_API_COMPOSITE) {
+				//when it is a hid guid we set api directly to hid, else we try to get api from device
+				if (IsEqualGUID(guid, &hid_guid)) {
+					api = USB_API_HID;
+					sub_api = SUB_API_NOTSET;
+				}
+				else {
+					api = USB_API_UNSUPPORTED;
+					sub_api = SUB_API_NOTSET;
+					get_api_type(&dev_info, &dev_info_data, &api, &sub_api);
+				}
+
+				if (api != USB_API_UNSUPPORTED) {
+					if (set_composite_interface(ctx, parent_dev, dev_interface_path, device_id, api, sub_api) == LIBUSB_SUCCESS) {
+						dev_interface_path = NULL;
+					}
+					else {
+						usbi_warn(ctx, "failed to set composite interface for '%s'", device_id);
+					}
+				}
+				else {
+					usbi_dbg(ctx, "unsupported API for interface '%s'", device_id);
+				}
 			}
-			else {
-				api = USB_API_UNSUPPORTED;
-				sub_api = SUB_API_NOTSET;
-				get_api_type(&dev_info, &dev_info_data, &api, &sub_api);
-			}
-			
-			if (api != USB_API_UNSUPPORTED) {
-				if (set_composite_interface(ctx, parent_dev, dev_interface_path, device_id, api, sub_api) == LIBUSB_SUCCESS) {
+			else if (parent_priv->apib->id == USB_API_HID) {
+				if (set_hid_interface(ctx, parent_dev, dev_interface_path) == LIBUSB_SUCCESS) {
 					dev_interface_path = NULL;
 				}
 				else {
-					usbi_warn(ctx, "failed to set composite interface for '%s'", device_id);
+					usbi_warn(ctx, "failed to set hid interface for '%s'", device_id);
 				}
-			}
-			else {
-				usbi_dbg(ctx, "unsupported API for interface '%s'", device_id);
-			}
-		}
-		else if (parent_priv->apib->id == USB_API_HID) {
-			if (set_hid_interface(ctx, parent_dev, dev_interface_path) == LIBUSB_SUCCESS) {
-				dev_interface_path = NULL;
-			}
-			else {
-				usbi_warn(ctx, "failed to set hid interface for '%s'", device_id);
-			}
 			}	
 		} else {
 			if (parent_priv->apib->id == USB_API_COMPOSITE) {
@@ -2968,8 +2966,8 @@ static void winusb_device_connection_status_changed(struct libusb_context *ctx, 
 			}
 			else if (parent_priv->apib->id == USB_API_HID) {
 				unset_hid_interface(parent_dev, dev_interface_path);
+			}
 		}
-	}
 	}
 	out:
 	free(device_id);
@@ -2977,19 +2975,7 @@ static void winusb_device_connection_status_changed(struct libusb_context *ctx, 
 	if (parent_dev)
 		libusb_unref_device(parent_dev);
 }
-/*
- * You can call CM_Get_Device_Interface_Property to get the property DEVPKEY_Device_InstanceId, then you can call CM_Locate_DevNode
- * if you want the DevInst from there. To go the other way, you can use CM_Get_Device_Interface_List to get the list of all the interface
- * names for a given device instance ID and class. The caveat, of course, is that the parent might have a different interface class
- * so you'll need to be looking for the correct class to look up its interface names.
- */
 
-
-static void winusb_device_nodes_changed(struct libusb_context *ctx)
-{
-	(void)ctx;
-	// winusb_get_device_list(ctx, NULL);
-}
 
 static int winusb_get_config_descriptor(struct libusb_device *dev, uint8_t config_index, void *buffer, size_t len)
 {
@@ -3374,8 +3360,7 @@ const struct windows_backend winusb_backend = {
 	winusb_clear_transfer_priv,
 	winusb_copy_transfer_data,
 	winusb_set_option,
-	winusb_device_connection_status_changed,
-	winusb_device_nodes_changed};
+	winusb_device_connection_status_changed};
 
 /*
  * USB API backends

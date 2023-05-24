@@ -344,7 +344,6 @@ struct windows_backend {
 	enum libusb_transfer_status (*copy_transfer_data)(struct usbi_transfer *itransfer, DWORD length);
 	int (*set_option)(struct libusb_context *ctx, enum libusb_option option, va_list args);
 	void (*device_connection_changed)(struct libusb_context *ctx, const char* name, const GUID* guid, bool connected);
-	void (*device_nodes_changed)(struct libusb_context* ctx);
 };
 
 struct windows_context_priv {
@@ -420,7 +419,6 @@ unsigned long htab_hash(const char *str);
 enum libusb_transfer_status usbd_status_to_libusb_transfer_status(USBD_STATUS status);
 void windows_force_sync_completion(struct usbi_transfer *itransfer, ULONG size);
 void windows_device_connection_changed(struct libusb_context *ctx, const char* id, const GUID* guid, bool connected);
-void windows_device_nodes_changed(struct libusb_context *ctx);
 
 #if defined(ENABLE_LOGGING)
 const char *windows_error_str(DWORD error_code);

@@ -65,16 +65,6 @@ LRESULT CALLBACK message_callback_handle_device_change(HWND hWnd, UINT message, 
     bool connected;
     struct libusb_context* ctx;
 
-
-    if (wParam == DBT_DEVNODES_CHANGED) {
-        usbi_mutex_static_lock(&active_contexts_lock);
-
-        for_each_context(ctx) 
-            windows_device_nodes_changed(ctx);
-        
-        usbi_mutex_static_unlock(&active_contexts_lock);
-    }
-
     if ((wParam != DBT_DEVICEARRIVAL) && (wParam != DBT_DEVICEREMOVECOMPLETE))
     {
         return TRUE;
@@ -97,19 +87,6 @@ LRESULT CALLBACK message_callback_handle_device_change(HWND hWnd, UINT message, 
     }
     usbi_mutex_static_unlock(&active_contexts_lock);
 
-
-    /*
-    * The idea is that:
-    *   - here invoke device_connected(id) and device_disconnected(id) callbacks on windows backend of each context
-    *   - during ctx init force detecting of all devices currently exposed in system and don't dereference them (so they will be available on device connected internal list) - here remember to check removing device after disconnecting. I suppose it is enough to remove code of unref_list in winusb backend. In usbdk backend there is probably bug and disconnected devices are never unreferenced....
-    *           Probably it is enough to remove code of managing unref_list and _discdevs (discovered_devs_append) in winusb_get_device_list. In usbdk backend there is probably bug and disconnected devices are never unreferenced....
-    *   - in winusb backend:
-    *       - manage list of possible device classes and enumerators (that workaround for some HUBs) inside winusb backend context priv
-    *       - when device is connected to the system we receive its id and we can just treat it in the same way as they are treated in winusb_get_device_list - to be considered. But probably it is possible to do. 
-    *                                       We receive that event for every device and every interface, so we can treat it exactly in the way of get_device_list (receive device, then receive interface and so on)
-    *       - when device is removed we can just find it's 'dev' instance looking for session_id - or maybe easier looking for insystem id
-    *   - in usbdk backend - check if we can react somehow for that - if not just get new list, disconnect devices which are no longer on list, newly connected will work without any need to change
-    */
     return TRUE;
 }
 
@@ -159,11 +136,12 @@ unsigned __stdcall windows_hotplug_threaded(void *param)
 
     // Note: Using HWND_MESSAGE removes broadcast events, like
     // the ones from driverless devices. However the broadcast
-    // events you get on driverless provide no data whatsoever
-    // about the device, the event (insertion or removal), or
-    // even if the device is actually USB. Bummer!
-    //hHotplugMessage = CreateWindowExA(0, LIBUSB_MSG_WINDOW_CLASS, NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
-    hHotplugMessage = CreateWindowExA(0, LIBUSB_MSG_WINDOW_CLASS, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
+    // events you get on driverless provide no data about the device, 
+    // the event (insertion or removal), or even if the device is actually USB. 
+    // We could use NULL instead of HWND_MESSAGE and redetect all devices, but 
+    // that would be a lot of work for little gain.
+    hHotplugMessage = CreateWindowExA(0, LIBUSB_MSG_WINDOW_CLASS, NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
+    //hHotplugMessage = CreateWindowExA(0, LIBUSB_MSG_WINDOW_CLASS, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
     if (hHotplugMessage == NULL)
     {
         usbi_err(NULL, "unable to create hotplug message window: %s", windows_error_str(0));

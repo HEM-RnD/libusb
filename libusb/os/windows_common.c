@@ -906,13 +906,6 @@ void windows_device_connection_changed(struct libusb_context* ctx, const char* i
 		priv->backend->device_connection_changed(ctx, id, guid, connected);
 }
 
-void windows_device_nodes_changed(struct libusb_context* ctx)
-{
-	struct windows_context_priv *priv = usbi_get_context_priv(ctx);
-	if (priv->backend->device_nodes_changed)
-		priv->backend->device_nodes_changed(ctx);
-}
-
 // NB: MSVC6 does not support named initializers.
 const struct usbi_os_backend usbi_backend = {
 	"Windows",
@@ -920,7 +913,11 @@ const struct usbi_os_backend usbi_backend = {
 	windows_init,
 	windows_exit,
 	windows_set_option,
+#if defined(LIBUSB_WINDOWS_HOTPLUG) && LIBUSB_WINDOWS_HOTPLUG
 	NULL,	/* get_device_list */
+#else
+	windows_get_device_list,
+#endif
 	NULL,	/* hotplug_poll */
 	NULL,	/* wrap_sys_device */
 	windows_open,

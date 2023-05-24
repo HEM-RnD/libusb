@@ -225,6 +225,20 @@ typedef RETURN_TYPE CONFIGRET;
 
 #define CR_SUCCESS	0x00000000
 
+//
+// Device Instance status flags, returned by call to CM_Get_DevInst_Status
+// Copied from cfg.h
+//
+#define DN_DRIVER_LOADED   (0x00000002) // Has Register_Device_Driver
+#define DN_HAS_PROBLEM     (0x00000400) // Need device installer
+
+//
+// DevInst problem values, returned by call to CM_Get_DevInst_Status
+//
+#define CM_PROB_FAILED_INSTALL             (0x0000001C)   // install failed
+#define CM_PROB_DISABLED                   (0x00000016)   // devinst is disabled
+
+
 /* Cfgmgr32 dependencies */
 DLL_DECLARE_HANDLE(Cfgmgr32);
 DLL_DECLARE_FUNC(WINAPI, CONFIGRET, CM_Get_Parent, (PDEVINST, DEVINST, ULONG));
@@ -232,6 +246,7 @@ DLL_DECLARE_FUNC(WINAPI, CONFIGRET, CM_Get_Child, (PDEVINST, DEVINST, ULONG));
 DLL_DECLARE_FUNC(WINAPI, CONFIGRET, CM_Get_Sibling, (PDEVINST, DEVINST, ULONG));
 DLL_DECLARE_FUNC(WINAPI, CONFIGRET, CM_Get_Device_ID_Size, (PULONG, DEVINST, ULONG));
 DLL_DECLARE_FUNC(WINAPI, CONFIGRET, CM_Get_Device_IDA, (DEVINST, PSTR, ULONG, ULONG));
+DLL_DECLARE_FUNC(WINAPI, CONFIGRET, CM_Get_DevNode_Status, (PULONG, PULONG, DEVINST, ULONG));
 
 /* AdvAPI32 dependencies */
 DLL_DECLARE_HANDLE(AdvAPI32);
