@@ -88,6 +88,10 @@ all-local: .libs/libusb-1.0.dll.a
 endif
 endif
 
+if WINDOWS_HOTPLUG
+AM_CXXFLAGS += -DLIBUSB_WINDOWS_HOTPLUG=1;$(AM_CFLAGS)
+endif
+
 libusb_1_0_la_LDFLAGS = $(LT_LDFLAGS) $(EXTRA_LDFLAGS)
 libusb_1_0_la_SOURCES = libusbi.h version.h version_nano.h \
 	core.c descriptor.c hotplug.c io.c strerror.c sync.c \
