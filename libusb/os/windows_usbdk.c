@@ -341,6 +341,7 @@ static int usbdk_get_device_list(struct libusb_context *ctx, struct discovered_d
 				libusb_unref_device(dev);
 				continue;
 			}
+			// TODO hotplug usbi_connect_device
 		}
 
 		discdevs = discovered_devs_append(*_discdevs, dev);
@@ -353,6 +354,8 @@ static int usbdk_get_device_list(struct libusb_context *ctx, struct discovered_d
 
 		*_discdevs = discdevs;
 	}
+
+	// TODO hotplug find removed devices and disconnect
 
 func_exit:
 	usbdk_helper.ReleaseDevicesList(devices);

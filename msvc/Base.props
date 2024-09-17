@@ -28,7 +28,7 @@
     </ClCompile>
     <!--ClCompile Release*-->
     <ClCompile Condition="$(Configuration.StartsWith('Release'))">
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>LIBUSB_WINDOWS_HOTPLUG=1;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <OmitFramePointers>true</OmitFramePointers>
